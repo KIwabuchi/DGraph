@@ -81,6 +81,10 @@ class SingleProcessDummyCommunicator(CommunicatorBase):
         device = torch.cuda.current_device()
         return device
 
+    def barrier(self):
+        # No-op for single process
+        pass
+
 
 def _run_experiment(
     dataset,
@@ -88,16 +92,18 @@ def _run_experiment(
     lr: float,
     epochs: int,
     log_prefix: str,
+    in_dim: int = 128,
     hidden_dims: int = 128,
     num_classes: int = 40,
     use_cache: bool = False,
+    dset_name: str = "arxiv",
 ):
     local_rank = comm.get_rank() % torch.cuda.device_count()
     print(f"Rank: {local_rank} Local Rank: {local_rank}")
     torch.cuda.set_device(local_rank)
     device = torch.cuda.current_device()
     model = GCN(
-        in_channels=128, hidden_dims=hidden_dims, num_classes=num_classes, comm=comm
+        in_channels=in_dim, hidden_dims=hidden_dims, num_classes=num_classes, comm=comm
     )
     rank = comm.get_rank()
     model = model.to(device)
@@ -114,9 +120,9 @@ def _run_experiment(
     node_features, edge_indices, rank_mappings, labels = dataset[0]
 
     node_features = node_features.to(device).unsqueeze(0)
-    edge_indices = edge_indices.to(device)[:, :-1].unsqueeze(0)
+    edge_indices = edge_indices.to(device).unsqueeze(0)
     labels = labels.to(device).unsqueeze(0)
-    rank_mappings = rank_mappings[:, :-1]
+    rank_mappings = rank_mappings
 
     if rank == 0:
         print("*" * 80)
@@ -125,7 +131,8 @@ def _run_experiment(
             print(f"Rank: {rank} Mapping: {rank_mappings.shape}")
             print(f"Rank: {rank} Node Features: {node_features.shape}")
             print(f"Rank: {rank} Edge Indices: {edge_indices.shape}")
-        dist.barrier()
+
+        comm.barrier()
     criterion = torch.nn.CrossEntropyLoss()
 
     train_mask = dataset.graph_obj.get_local_mask("train", rank)
@@ -150,6 +157,16 @@ def _run_experiment(
 
         # This says where the edges are located
         edge_placement = rank_mappings[0]
+        
+        cache_prefix = f"cache/{dset_name}"
+        scatter_cache_file = f"{cache_prefix}_scatter_cache_{world_size}_{rank}.pt"
+        gather_cache_file = f"{cache_prefix}_gather_cache_{world_size}_{rank}.pt"
+
+        if os.path.exists(gather_cache_file):
+            gather_cache = torch.load(gather_cache_file, weights_only=False)
+
+        if os.path.exists(scatter_cache_file):
+            scatter_cache = torch.load(scatter_cache_file, weight_only=False)
 
         # These say where the source and destination nodes are located
         edge_src_placement = rank_mappings[
@@ -169,6 +186,9 @@ def _run_experiment(
                 rank,
                 world_size,
             )
+            with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
+                torch.save(gather_cache, f) 
+        
         if scatter_cache is None:
             nodes_per_rank = dataset.graph_obj.get_nodes_per_rank()
 
@@ -180,6 +200,8 @@ def _run_experiment(
                 rank,
                 world_size,
             )
+            with open(f"{log_prefix}_scatter_cache_{world_size}_{rank}.pt", "wb") as f:
+                torch.save(scatter_cache, f)
 
         # Sanity checks for the cache
         for key, value in gather_cache.gather_send_local_placement.items():
@@ -208,16 +230,16 @@ def _run_experiment(
         end_time = perf_counter()
         print(f"Rank: {rank} Cache Generation Time: {end_time - start_time:.4f} s")
 
-        if rank == 0:
-            with open(f"{log_prefix}_gather_cache_{world_size}.pt", "wb") as f:
-                torch.save(gather_cache, f)
-            with open(f"{log_prefix}_scatter_cache_{world_size}.pt", "wb") as f:
-                torch.save(scatter_cache, f)
-        print(f"Rank: {rank} Cache Generated")
+        
+        #with open(f"{log_prefix}_gather_cache_{world_size}_{rank}.pt", "wb") as f:
+        #    torch.save(gather_cache, f)
+        #with open(f"{log_prefix}_scatter_cache_{world_size}_{rank}.pt", "wb") as f:
+        #    torch.save(scatter_cache, f)
+        #print(f"Rank: {rank} Cache Generated")
 
     training_times = []
     for i in range(epochs):
-        dist.barrier()
+        comm.barrier()
         torch.cuda.synchronize()
         start_time = torch.cuda.Event(enable_timing=True)
         end_time = torch.cuda.Event(enable_timing=True)
@@ -234,7 +256,7 @@ def _run_experiment(
         dist_print_ephemeral(f"Epoch {i} \t Loss: {loss.item()}", rank)
         optimizer.step()
 
-        dist.barrier()
+        comm.barrier()
         end_time.record(stream)
         torch.cuda.synchronize()
         training_times.append(start_time.elapsed_time(end_time))
@@ -313,13 +335,15 @@ def main(
     use_cache: bool = False,
 ):
     _communicator = backend.lower()
-
+    dset_name = dataset
     assert _communicator.lower() in [
         "single",
         "nccl",
         "nvshmem",
         "mpi",
     ], "Invalid backend"
+
+    in_dims = {"arxiv": 128, "products": 100}
 
     assert dataset in ["arxiv", "products"], "Invalid dataset"
 
@@ -366,6 +390,8 @@ def main(
             log_prefix,
             use_cache=use_cache,
             num_classes=num_classes,
+            dset_name=dset_name,
+            in_dim=in_dims[dset_name]
         )
         training_trajectores[i] = training_traj
         validation_trajectores[i] = val_traj
