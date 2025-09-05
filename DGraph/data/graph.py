@@ -286,3 +286,4 @@ def get_round_robin_node_rank_map(num_nodes: int, world_size: int) -> torch.Tens
         node_rank_map[i] = i % world_size
 
     return node_rank_map
+    
