@@ -263,6 +263,18 @@ namespace Local
     }
   };
 
+  template <>
+  struct FloatAtomicAddOp<float4>
+  {
+    __device__ __forceinline__ void operator()(float4 *cur_addr, const float4 new_val)
+    {
+      atomicAdd(&cur_addr->x, new_val.x);
+      atomicAdd(&cur_addr->y, new_val.y);
+      atomicAdd(&cur_addr->z, new_val.z);
+      atomicAdd(&cur_addr->w, new_val.w);
+    }
+  };
+
   template <typename T>
   struct FloatSetOp
   {

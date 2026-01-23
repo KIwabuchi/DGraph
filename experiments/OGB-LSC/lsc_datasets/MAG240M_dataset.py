@@ -136,9 +136,9 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
         num_features = self.dataset.num_paper_features
         num_classes = self.dataset.num_classes
 
-        self.train_mask = self.dataset.get_idx_split("train")
-        self.val_mask = self.dataset.get_idx_split("valid")
-        self.test_mask = self.dataset.get_idx_split("test-dev")
+        self.train_mask = torch.from_numpy(self.dataset.get_idx_split("train"))
+        self.val_mask = torch.from_numpy(self.dataset.get_idx_split("valid"))
+        self.test_mask = torch.from_numpy(self.dataset.get_idx_split("test-dev"))
 
         local_papers_mask, num_local_papers = load_or_generate_vertex_rank_mask(
             paper_rank_mappings, num_papers, world_size, rank
@@ -162,7 +162,7 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
 
         paper_features = torch.from_numpy(
             self.dataset.paper_feat[local_papers_mask]
-        ).half()
+        ).float()
 
         path = self.dataset.dir
 
@@ -173,7 +173,7 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
                 dtype=np.float16,
                 shape=(num_authors, num_features),
             )[local_authors_mask]
-        )
+        ).float()
         institution_features = torch.from_numpy(
             np.memmap(
                 filename=path + "/institution_feat.npy",
@@ -181,7 +181,7 @@ class DGraph_MAG240M_Dataset(DistributedHeteroGraphDataset):
                 dtype=np.float16,
                 shape=(num_institutions, num_features),
             )[local_institutions_mask]
-        )
+        ).float()
         labels = torch.from_numpy(self.dataset.paper_label)
 
         paper_2_paper_edges = torch.from_numpy(
